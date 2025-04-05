@@ -1,0 +1,27 @@
+{
+  "name": "com.inventonater.chromecast",
+  "version": "1.0.0",
+  "displayName": "Chromecast for Unity",
+  "description": "Chromecast implementation for Unity based on SharpCaster",
+  "unity": "2022.3",
+  "unityRelease": "0f1",
+  "dependencies": {},
+  "scopedRegistries": [
+    {
+      "name": "package.openupm.com",
+      "url": "https://package.openupm.com",
+      "scopes": [
+        "com.cysharp.unitask"
+      ]
+    }
+  ],
+  "keywords": [
+    "chromecast",
+    "streaming",
+    "casting"
+  ],
+  "author": {
+    "name": "Inventonater",
+    "url": "https://github.com/Inventonater"
+  }
+}
