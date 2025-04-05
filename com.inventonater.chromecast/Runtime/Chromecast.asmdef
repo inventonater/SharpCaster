@@ -1,19 +1,30 @@
 {
-  "name": "Chromecast",
-  "rootNamespace": "Inventonater.Chromecast",
-  "references": [
-    "UniTask",
-    "Google.Protobuf"
-  ],
-  "includePlatforms": [],
-  "excludePlatforms": [],
-  "allowUnsafeCode": false,
-  "overrideReferences": false,
-  "precompiledReferences": [
-    "Google.Protobuf.dll"
-  ],
-  "autoReferenced": true,
-  "defineConstraints": [],
-  "versionDefines": [],
-  "noEngineReferences": false
+    "name": "Inventonater.Chromecast",
+    "rootNamespace": "Inventonater.Chromecast",
+    "references": [
+        "GUID:f51ebe6a0ceec4240a699833d6309b23",
+        "GUID:fca7ec166e04dcb4f8c988032c0362a9"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [
+        "Newtonsoft.Json.dll"
+    ],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [
+        {
+            "name": "com.cysharp.unitask",
+            "expression": "2.0.0",
+            "define": "UNITASK_ENABLED"
+        },
+        {
+            "name": "com.stalomeow.google-protobuf",
+            "expression": "3.0.0",
+            "define": "GOOGLE_PROTOBUF_ENABLED"
+        }
+    ],
+    "noEngineReferences": false
 }

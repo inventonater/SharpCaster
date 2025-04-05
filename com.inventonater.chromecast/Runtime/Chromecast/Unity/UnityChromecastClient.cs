@@ -102,28 +102,64 @@ namespace Inventonater.Chromecast.Unity
             }
         }
         
+        /// <summary>
+        /// Register message types by scanning for classes with ReceptionMessageAttribute
+        /// or manually registering known types
+        /// </summary>
         private Dictionary<string, Type> RegisterMessageTypes()
         {
-            var types = new Dictionary<string, Type>();
+            var types = new Dictionary<string, Type>(StringComparer.OrdinalIgnoreCase);
             
-            // Since we aren't doing assembly scanning for simplicity, manually register
-            // the message types we're using in the Unity implementation
+            try
+            {
+                // Method 1: Scan assemblies for message types with ReceptionMessageAttribute
+                var assembly = typeof(Message).Assembly;
+                var messageTypes = assembly.GetTypes()
+                    .Where(t => t.IsClass && !t.IsAbstract && typeof(IMessage).IsAssignableFrom(t));
+                
+                foreach (var type in messageTypes)
+                {
+                    var attr = type.GetCustomAttribute<ReceptionMessageAttribute>();
+                    if (attr != null && !string.IsNullOrEmpty(attr.Type))
+                    {
+                        try
+                        {
+                            types[attr.Type] = type;
+                            Debug.Log($"Auto-registered message type: {attr.Type} -> {type.Name}");
+                        }
+                        catch (Exception ex)
+                        {
+                            Debug.LogError($"Error registering message type {type.Name}: {ex.Message}");
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"Could not automatically scan for message types: {ex.Message}");
+                Debug.LogWarning("Falling back to manual registration");
+            }
             
-            // Receiver channel messages
-            types.Add("RECEIVER_STATUS", typeof(Messages.Receiver.ReceiverStatusMessage));
+            // Method 2: Manual registration for critical types (as a fallback)
+            RegisterMessageTypeIfNotExists(types, "RECEIVER_STATUS", typeof(Messages.Receiver.ReceiverStatusMessage));
+            RegisterMessageTypeIfNotExists(types, "CLOSE", typeof(Messages.Connection.CloseMessage));
+            RegisterMessageTypeIfNotExists(types, "PING", typeof(Messages.Heartbeat.PingMessage));
+            RegisterMessageTypeIfNotExists(types, "PONG", typeof(Messages.Heartbeat.PongMessage));
             
-            // Connection channel messages
-            types.Add("CLOSE", typeof(Messages.Connection.CloseMessage));
-            
-            // Heartbeat channel messages
-            types.Add("PING", typeof(Messages.Heartbeat.PingMessage));
-            types.Add("PONG", typeof(Messages.Heartbeat.PongMessage));
-            
-            // Media channel messages (if implemented)
-            // types.Add("MEDIA_STATUS", typeof(Messages.Media.MediaStatusMessage));
-            
-            Debug.Log($"Registered {types.Count} message types");
+            Debug.Log($"Registered {types.Count} message types in total");
             return types;
+        }
+        
+        /// <summary>
+        /// Helper method to register a message type if it doesn't already exist
+        /// </summary>
+        private void RegisterMessageTypeIfNotExists(Dictionary<string, Type> types, string key, Type type)
+        {
+            if (!types.ContainsKey(key))
+            {
+                types[key] = type;
+                Debug.Log($"Manually registered message type: {key} -> {type.Name}");
+            }
         }
         
         /// <summary>

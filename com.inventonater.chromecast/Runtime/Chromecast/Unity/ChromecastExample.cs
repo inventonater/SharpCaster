@@ -1,212 +1,485 @@
 using Cysharp.Threading.Tasks;
 using Inventonater.Chromecast.Models;
+using Inventonater.Chromecast.Models.ChromecastStatus;
+using Inventonater.Chromecast.Models.Media;
 using System.Collections.Generic;
 using System.Linq;
 using UnityEngine;
 using UnityEngine.UI;
 
-namespace Inventonater.Chromecast.Unity.Examples
+namespace Inventonater.Chromecast.Unity
 {
     /// <summary>
-    /// Example usage of ChromecastManager in a Unity application
+    /// Example MonoBehaviour demonstrating how to use the ChromecastManager
+    /// Attach to a GameObject with a ChromecastManager component
     /// </summary>
     public class ChromecastExample : MonoBehaviour
     {
         [Header("References")]
+        [Tooltip("Reference to a ChromecastManager component")]
         [SerializeField] private ChromecastManager _chromecastManager;
+        
+        [Header("UI References")]
+        [Tooltip("Dropdown to display discovered devices")]
         [SerializeField] private Dropdown _deviceDropdown;
-        [SerializeField] private Button _scanButton;
+        
+        [Tooltip("Button to trigger device discovery")]
+        [SerializeField] private Button _discoverButton;
+        
+        [Tooltip("Button to connect to selected device")]
         [SerializeField] private Button _connectButton;
+        
+        [Tooltip("Button to disconnect from current device")]
         [SerializeField] private Button _disconnectButton;
-        [SerializeField] private Button _playButton;
+        
+        [Tooltip("Input field for media URL")]
+        [SerializeField] private InputField _mediaUrlInput;
+        
+        [Tooltip("Button to load and play media")]
+        [SerializeField] private Button _playMediaButton;
+        
+        [Tooltip("Button to pause media")]
         [SerializeField] private Button _pauseButton;
+        
+        [Tooltip("Button to stop media")]
         [SerializeField] private Button _stopButton;
+        
+        [Tooltip("Slider for volume control")]
         [SerializeField] private Slider _volumeSlider;
-        [SerializeField] private InputField _urlInput;
         
-        [Header("Configuration")]
-        [SerializeField] private string _defaultAppId = "CC1AD845"; // Default Media Receiver
-        [SerializeField] private string _defaultMediaUrl = "https://commondatastorage.googleapis.com/gtv-videos-bucket/CastVideos/mp4/BigBuckBunny.mp4";
+        [Tooltip("Status text field")]
+        [SerializeField] private Text _statusText;
         
-        private List<ChromecastReceiver> _devices = new List<ChromecastReceiver>();
+        // List of discovered devices
+        private List<ChromecastReceiver> _discoveredDevices = new List<ChromecastReceiver>();
+        
+        // Currently selected device index
+        private int _selectedDeviceIndex = -1;
         
         private void Start()
         {
+            // Get reference to ChromecastManager if not set in Inspector
             if (_chromecastManager == null)
             {
-                _chromecastManager = FindObjectOfType<ChromecastManager>();
+                _chromecastManager = GetComponent<ChromecastManager>();
                 
                 if (_chromecastManager == null)
                 {
-                    _chromecastManager = gameObject.AddComponent<ChromecastManager>();
+                    Debug.LogError("ChromecastExample requires a ChromecastManager component");
+                    enabled = false;
+                    return;
                 }
             }
             
-            SetupUIEvents();
-            UpdateUIState(false);
-            
-            // Set default media URL
-            if (_urlInput != null)
-            {
-                _urlInput.text = _defaultMediaUrl;
-            }
-            
-            // Auto-scan for devices on start
-            ScanForDevices().Forget();
-        }
-        
-        private void SetupUIEvents()
-        {
-            if (_scanButton != null)
-                _scanButton.onClick.AddListener(() => ScanForDevices().Forget());
-            
-            if (_connectButton != null)
-                _connectButton.onClick.AddListener(() => ConnectToSelectedDevice().Forget());
-            
-            if (_disconnectButton != null)
-                _disconnectButton.onClick.AddListener(() => DisconnectFromDevice().Forget());
-            
-            if (_playButton != null)
-                _playButton.onClick.AddListener(() => PlayMedia().Forget());
-            
-            if (_pauseButton != null)
-                _pauseButton.onClick.AddListener(() => PauseMedia().Forget());
-            
-            if (_stopButton != null)
-                _stopButton.onClick.AddListener(() => StopMedia().Forget());
-            
-            if (_volumeSlider != null)
-                _volumeSlider.onValueChanged.AddListener(value => SetVolume(value).Forget());
+            // Initialize UI
+            InitializeUI();
             
             // Subscribe to ChromecastManager events
-            _chromecastManager.OnConnected += connected => UpdateUIState(connected);
-            _chromecastManager.OnDisconnected += () => UpdateUIState(false);
+            SubscribeToEvents();
+            
+            // Update UI state
+            UpdateUIState();
+            
+            // Set default status text
+            UpdateStatus("Ready. Click 'Discover Devices' to start.");
         }
         
-        private async UniTaskVoid ScanForDevices()
+        private void OnDestroy()
         {
-            if (_scanButton != null)
-                _scanButton.interactable = false;
-            
-            Debug.Log("Scanning for Chromecast devices...");
-            
-            _devices = (await _chromecastManager.DiscoverDevicesAsync()).ToList();
-            
-            if (_deviceDropdown != null)
-            {
-                _deviceDropdown.ClearOptions();
+            // Unsubscribe from events to prevent memory leaks
+            UnsubscribeFromEvents();
+        }
+        
+        private void InitializeUI()
+        {
+            // Setup UI event handlers
+            if (_discoverButton != null)
+                _discoverButton.onClick.AddListener(OnDiscoverButtonClicked);
                 
-                if (_devices.Count > 0)
-                {
-                    var options = _devices.Select(d => new Dropdown.OptionData(d.Name)).ToList();
-                    _deviceDropdown.AddOptions(options);
-                    _deviceDropdown.value = 0;
-                    _connectButton.interactable = true;
-                }
-                else
-                {
-                    _deviceDropdown.AddOptions(new List<string> { "No devices found" });
-                    _connectButton.interactable = false;
-                }
+            if (_connectButton != null)
+                _connectButton.onClick.AddListener(OnConnectButtonClicked);
+                
+            if (_disconnectButton != null)
+                _disconnectButton.onClick.AddListener(OnDisconnectButtonClicked);
+                
+            if (_playMediaButton != null)
+                _playMediaButton.onClick.AddListener(OnPlayMediaButtonClicked);
+                
+            if (_pauseButton != null)
+                _pauseButton.onClick.AddListener(OnPauseButtonClicked);
+                
+            if (_stopButton != null)
+                _stopButton.onClick.AddListener(OnStopButtonClicked);
+                
+            if (_deviceDropdown != null)
+                _deviceDropdown.onValueChanged.AddListener(OnDeviceDropdownValueChanged);
+                
+            if (_volumeSlider != null)
+            {
+                _volumeSlider.minValue = 0f;
+                _volumeSlider.maxValue = 1f;
+                _volumeSlider.value = 0.5f;
+                _volumeSlider.onValueChanged.AddListener(OnVolumeSliderValueChanged);
             }
             
-            Debug.Log($"Found {_devices.Count} Chromecast devices");
-            
-            if (_scanButton != null)
-                _scanButton.interactable = true;
+            // Populate device dropdown with any already discovered devices
+            PopulateDeviceDropdown(_chromecastManager.DiscoveredDevices);
         }
         
-        private async UniTaskVoid ConnectToSelectedDevice()
+        private void SubscribeToEvents()
         {
-            if (_devices.Count == 0 || _deviceDropdown.value >= _devices.Count)
-                return;
-            
-            var device = _devices[_deviceDropdown.value];
-            
-            Debug.Log($"Connecting to {device.Name}...");
-            await _chromecastManager.ConnectToDeviceAsync(device);
-            
-            // Launch the default media receiver app
-            if (_chromecastManager.IsConnected)
+            if (_chromecastManager != null)
             {
-                await _chromecastManager.LaunchApplicationAsync(_defaultAppId);
+                _chromecastManager.OnDevicesDiscovered += OnDevicesDiscovered;
+                _chromecastManager.OnConnected += OnDeviceConnected;
+                _chromecastManager.OnDisconnected += OnDeviceDisconnected;
+                _chromecastManager.OnMediaStatusChanged += OnMediaStatusChanged;
+                _chromecastManager.OnError += OnError;
             }
         }
         
-        private async UniTaskVoid DisconnectFromDevice()
+        private void UnsubscribeFromEvents()
         {
-            Debug.Log("Disconnecting from device...");
-            await _chromecastManager.DisconnectAsync();
+            if (_chromecastManager != null)
+            {
+                _chromecastManager.OnDevicesDiscovered -= OnDevicesDiscovered;
+                _chromecastManager.OnConnected -= OnDeviceConnected;
+                _chromecastManager.OnDisconnected -= OnDeviceDisconnected;
+                _chromecastManager.OnMediaStatusChanged -= OnMediaStatusChanged;
+                _chromecastManager.OnError -= OnError;
+            }
         }
         
-        private async UniTaskVoid PlayMedia()
+        #region Button Event Handlers
+        
+        private void OnDiscoverButtonClicked()
         {
-            if (!_chromecastManager.IsConnected)
-                return;
-            
-            // If we have a URL in the input field, load it first
-            string url = _urlInput?.text ?? _defaultMediaUrl;
-            
-            if (!string.IsNullOrEmpty(url) && _chromecastManager.MediaStatus == null)
+            DiscoverDevicesAsync().Forget();
+        }
+        
+        private void OnConnectButtonClicked()
+        {
+            if (_selectedDeviceIndex >= 0 && _selectedDeviceIndex < _discoveredDevices.Count)
             {
-                Debug.Log($"Loading media: {url}");
-                await _chromecastManager.LoadMediaAsync(url);
+                ConnectToDeviceAsync(_discoveredDevices[_selectedDeviceIndex]).Forget();
+            }
+        }
+        
+        private void OnDisconnectButtonClicked()
+        {
+            DisconnectAsync().Forget();
+        }
+        
+        private void OnPlayMediaButtonClicked()
+        {
+            if (_mediaUrlInput != null && !string.IsNullOrEmpty(_mediaUrlInput.text))
+            {
+                PlayMediaAsync(_mediaUrlInput.text).Forget();
             }
             else
             {
-                Debug.Log("Playing media");
-                await _chromecastManager.PlayAsync();
+                UpdateStatus("Please enter a media URL");
             }
         }
         
-        private async UniTaskVoid PauseMedia()
+        private void OnPauseButtonClicked()
         {
-            if (!_chromecastManager.IsConnected)
-                return;
-            
-            Debug.Log("Pausing media");
-            await _chromecastManager.PauseAsync();
+            PauseMediaAsync().Forget();
         }
         
-        private async UniTaskVoid StopMedia()
+        private void OnStopButtonClicked()
         {
-            if (!_chromecastManager.IsConnected)
-                return;
-            
-            Debug.Log("Stopping media");
-            await _chromecastManager.StopAsync();
+            StopMediaAsync().Forget();
         }
         
-        private async UniTaskVoid SetVolume(float value)
+        private void OnDeviceDropdownValueChanged(int index)
         {
-            if (!_chromecastManager.IsConnected)
-                return;
-            
-            await _chromecastManager.SetVolumeAsync(value);
+            _selectedDeviceIndex = index;
+            UpdateUIState();
         }
         
-        private void UpdateUIState(bool connected)
+        private void OnVolumeSliderValueChanged(float value)
         {
+            SetVolumeAsync(value).Forget();
+        }
+        
+        #endregion
+        
+        #region ChromecastManager Event Handlers
+        
+        private void OnDevicesDiscovered(IEnumerable<ChromecastReceiver> devices)
+        {
+            // Update UI on main thread
+            UnityMainThreadDispatcher.Instance().Enqueue(() => {
+                PopulateDeviceDropdown(devices);
+                UpdateStatus($"Found {_discoveredDevices.Count} devices");
+                UpdateUIState();
+            });
+        }
+        
+        private void OnDeviceConnected(ChromecastReceiver device)
+        {
+            // Update UI on main thread
+            UnityMainThreadDispatcher.Instance().Enqueue(() => {
+                UpdateStatus($"Connected to {device.Name}");
+                UpdateUIState();
+            });
+        }
+        
+        private void OnDeviceDisconnected()
+        {
+            // Update UI on main thread
+            UnityMainThreadDispatcher.Instance().Enqueue(() => {
+                UpdateStatus("Disconnected");
+                UpdateUIState();
+            });
+        }
+        
+        private void OnMediaStatusChanged(MediaStatus status)
+        {
+            // Update UI on main thread
+            UnityMainThreadDispatcher.Instance().Enqueue(() => {
+                UpdateMediaStatus(status);
+            });
+        }
+        
+        private void OnError(string errorMessage)
+        {
+            // Update UI on main thread
+            UnityMainThreadDispatcher.Instance().Enqueue(() => {
+                UpdateStatus($"Error: {errorMessage}");
+            });
+        }
+        
+        #endregion
+        
+        #region Async Operations
+        
+        private async UniTaskVoid DiscoverDevicesAsync()
+        {
+            UpdateStatus("Discovering devices...");
+            UpdateUIState(isDiscovering: true);
+            
+            try
+            {
+                await _chromecastManager.DiscoverDevicesAsync();
+            }
+            catch (System.Exception ex)
+            {
+                UpdateStatus($"Discovery error: {ex.Message}");
+            }
+            finally
+            {
+                UpdateUIState(isDiscovering: false);
+            }
+        }
+        
+        private async UniTaskVoid ConnectToDeviceAsync(ChromecastReceiver device)
+        {
+            UpdateStatus($"Connecting to {device.Name}...");
+            UpdateUIState(isConnecting: true);
+            
+            try
+            {
+                await _chromecastManager.ConnectToDeviceAsync(device);
+                await _chromecastManager.LaunchApplicationAsync();
+            }
+            catch (System.Exception ex)
+            {
+                UpdateStatus($"Connection error: {ex.Message}");
+            }
+            finally
+            {
+                UpdateUIState(isConnecting: false);
+            }
+        }
+        
+        private async UniTaskVoid DisconnectAsync()
+        {
+            UpdateStatus("Disconnecting...");
+            
+            try
+            {
+                await _chromecastManager.DisconnectAsync();
+            }
+            catch (System.Exception ex)
+            {
+                UpdateStatus($"Disconnect error: {ex.Message}");
+            }
+        }
+        
+        private async UniTaskVoid PlayMediaAsync(string url)
+        {
+            UpdateStatus($"Loading media: {url}");
+            
+            try
+            {
+                await _chromecastManager.LoadMediaAsync(url);
+                UpdateStatus("Media loaded and playing");
+            }
+            catch (System.Exception ex)
+            {
+                UpdateStatus($"Media error: {ex.Message}");
+            }
+        }
+        
+        private async UniTaskVoid PauseMediaAsync()
+        {
+            try
+            {
+                await _chromecastManager.PauseAsync();
+                UpdateStatus("Media paused");
+            }
+            catch (System.Exception ex)
+            {
+                UpdateStatus($"Pause error: {ex.Message}");
+            }
+        }
+        
+        private async UniTaskVoid StopMediaAsync()
+        {
+            try
+            {
+                await _chromecastManager.StopAsync();
+                UpdateStatus("Media stopped");
+            }
+            catch (System.Exception ex)
+            {
+                UpdateStatus($"Stop error: {ex.Message}");
+            }
+        }
+        
+        private async UniTaskVoid SetVolumeAsync(float volume)
+        {
+            try
+            {
+                await _chromecastManager.SetVolumeAsync(volume);
+            }
+            catch (System.Exception)
+            {
+                // Ignore volume errors in UI
+            }
+        }
+        
+        #endregion
+        
+        #region UI Helpers
+        
+        private void PopulateDeviceDropdown(IEnumerable<ChromecastReceiver> devices)
+        {
+            if (_deviceDropdown == null) return;
+            
+            _discoveredDevices = devices.ToList();
+            
+            _deviceDropdown.ClearOptions();
+            
+            if (_discoveredDevices.Count > 0)
+            {
+                var options = _discoveredDevices.Select(d => new Dropdown.OptionData(d.Name)).ToList();
+                _deviceDropdown.AddOptions(options);
+                _deviceDropdown.value = 0;
+                _selectedDeviceIndex = 0;
+            }
+            else
+            {
+                _deviceDropdown.AddOptions(new List<string> { "No devices found" });
+                _selectedDeviceIndex = -1;
+            }
+        }
+        
+        private void UpdateUIState(bool isDiscovering = false, bool isConnecting = false)
+        {
+            if (_discoverButton != null)
+                _discoverButton.interactable = !isDiscovering && !isConnecting && !_chromecastManager.IsDiscovering;
+                
             if (_connectButton != null)
-                _connectButton.interactable = !connected && _devices.Count > 0;
-            
+                _connectButton.interactable = !isDiscovering && !isConnecting && _selectedDeviceIndex >= 0 && !_chromecastManager.IsConnected;
+                
             if (_disconnectButton != null)
-                _disconnectButton.interactable = connected;
-            
-            if (_playButton != null)
-                _playButton.interactable = connected;
-            
+                _disconnectButton.interactable = _chromecastManager.IsConnected;
+                
+            if (_playMediaButton != null)
+                _playMediaButton.interactable = _chromecastManager.IsConnected;
+                
             if (_pauseButton != null)
-                _pauseButton.interactable = connected;
-            
+                _pauseButton.interactable = _chromecastManager.IsConnected && _chromecastManager.MediaStatus != null;
+                
             if (_stopButton != null)
-                _stopButton.interactable = connected;
-            
+                _stopButton.interactable = _chromecastManager.IsConnected && _chromecastManager.MediaStatus != null;
+                
             if (_volumeSlider != null)
-                _volumeSlider.interactable = connected;
+                _volumeSlider.interactable = _chromecastManager.IsConnected;
+                
+            if (_mediaUrlInput != null)
+                _mediaUrlInput.interactable = _chromecastManager.IsConnected;
+        }
+        
+        private void UpdateStatus(string status)
+        {
+            if (_statusText != null)
+            {
+                _statusText.text = status;
+                Debug.Log($"[ChromecastExample] {status}");
+            }
+        }
+        
+        private void UpdateMediaStatus(MediaStatus status)
+        {
+            if (status == null) return;
             
-            if (_urlInput != null)
-                _urlInput.interactable = connected;
+            string playerState = status.PlayerState.ToString();
+            
+            UpdateStatus($"Media {playerState}");
+            UpdateUIState();
+        }
+        
+        #endregion
+    }
+
+    /// <summary>
+    /// Simple dispatcher to run actions on the Unity main thread
+    /// </summary>
+    public class UnityMainThreadDispatcher : MonoBehaviour
+    {
+        private static UnityMainThreadDispatcher _instance;
+        private readonly Queue<System.Action> _actions = new Queue<System.Action>();
+        private readonly object _lockObject = new object();
+        
+        /// <summary>
+        /// Gets the instance of the dispatcher
+        /// </summary>
+        public static UnityMainThreadDispatcher Instance()
+        {
+            if (_instance == null)
+            {
+                var go = new GameObject("UnityMainThreadDispatcher");
+                _instance = go.AddComponent<UnityMainThreadDispatcher>();
+                DontDestroyOnLoad(go);
+            }
+            
+            return _instance;
+        }
+        
+        /// <summary>
+        /// Enqueues an action to be executed on the main thread
+        /// </summary>
+        public void Enqueue(System.Action action)
+        {
+            lock (_lockObject)
+            {
+                _actions.Enqueue(action);
+            }
+        }
+        
+        private void Update()
+        {
+            lock (_lockObject)
+            {
+                while (_actions.Count > 0)
+                {
+                    _actions.Dequeue()?.Invoke();
+                }
+            }
         }
     }
 }

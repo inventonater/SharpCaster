@@ -3,6 +3,7 @@ using Inventonater.Chromecast.Interfaces;
 using Inventonater.Chromecast.Models;
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
@@ -16,41 +17,102 @@ namespace Inventonater.Chromecast.Unity
     /// </summary>
     public class UnityChromecastLocator : IChromecastLocator
     {
-        // Constants for mDNS/DNS-SD discovery
-        private const int MDNS_PORT = 5353;
-        private const string MDNS_ADDRESS = "224.0.0.251";
-        private const string SERVICE_TYPE = "_googlecast._tcp";
-        private const string LOCAL_DOMAIN = "local";
+        /// <summary>
+        /// Configuration for device discovery
+        /// </summary>
+        public class DiscoveryConfig
+        {
+            /// <summary>
+            /// The port used by Chromecast devices (default: 8009)
+            /// </summary>
+            public int ChromecastPort { get; set; } = 8009;
+            
+            /// <summary>
+            /// Custom IP addresses to scan (in addition to local subnet)
+            /// </summary>
+            public List<string> CustomIpAddresses { get; set; } = new List<string>();
+            
+            /// <summary>
+            /// Timeout in milliseconds for each connection attempt
+            /// </summary>
+            public int ConnectionTimeoutMs { get; set; } = 300;
+            
+            /// <summary>
+            /// Whether to scan the local subnet
+            /// </summary>
+            public bool ScanLocalSubnet { get; set; } = true;
+            
+            /// <summary>
+            /// Maximum concurrent connection attempts
+            /// </summary>
+            public int MaxConcurrentScans { get; set; } = 10;
+        }
         
-        private readonly List<ChromecastReceiver> _simulatedDevices = new List<ChromecastReceiver>();
+        private const int CHROMECAST_PORT = 8009;
+        private readonly List<ChromecastReceiver> _knownDevices = new List<ChromecastReceiver>();
+        private DiscoveryConfig _config;
         
         /// <summary>
         /// Initializes a new instance of the UnityChromecastLocator class
         /// </summary>
-        public UnityChromecastLocator()
+        /// <param name="config">Optional discovery configuration</param>
+        public UnityChromecastLocator(DiscoveryConfig config = null)
         {
+            _config = config ?? new DiscoveryConfig();
+            
             // Add simulated devices for testing in editor
             if (Application.isEditor)
             {
-                AddSimulatedDevice("Living Room TV", "192.168.1.100");
-                AddSimulatedDevice("Bedroom TV", "192.168.1.101");
+                AddDevice("Living Room TV", "192.168.1.100");
+                AddDevice("Bedroom TV", "192.168.1.101");
             }
         }
         
         /// <summary>
-        /// Adds a simulated device for testing
+        /// Adds a known device
         /// </summary>
         /// <param name="name">The device name</param>
         /// <param name="ipAddress">The IP address</param>
-        public void AddSimulatedDevice(string name, string ipAddress)
+        /// <param name="port">The port (default: 8009)</param>
+        /// <returns>The added device</returns>
+        public ChromecastReceiver AddDevice(string name, string ipAddress, int port = CHROMECAST_PORT)
         {
-            var uri = new Uri($"https://{ipAddress}:8009");
-            _simulatedDevices.Add(new ChromecastReceiver
+            var uri = new Uri($"https://{ipAddress}:{port}");
+            var device = new ChromecastReceiver
             {
                 Name = name,
                 DeviceUri = uri,
-                Port = 8009
-            });
+                Port = port
+            };
+            
+            // Check if device already exists by IP
+            var existingDevice = _knownDevices.FirstOrDefault(d => 
+                d.DeviceUri.Host.Equals(ipAddress, StringComparison.OrdinalIgnoreCase));
+                
+            if (existingDevice != null)
+            {
+                // Remove existing device with same IP
+                _knownDevices.Remove(existingDevice);
+            }
+            
+            _knownDevices.Add(device);
+            return device;
+        }
+        
+        /// <summary>
+        /// Gets all known devices
+        /// </summary>
+        public IEnumerable<ChromecastReceiver> GetKnownDevices()
+        {
+            return _knownDevices.ToList();
+        }
+        
+        /// <summary>
+        /// Clears all known devices
+        /// </summary>
+        public void ClearKnownDevices()
+        {
+            _knownDevices.Clear();
         }
         
         /// <summary>
@@ -64,64 +126,116 @@ namespace Inventonater.Chromecast.Unity
             if (Application.isEditor)
             {
                 Debug.Log("Using simulated Chromecast devices in editor");
-                return _simulatedDevices;
+                return _knownDevices;
             }
             
-            Debug.Log("Starting Chromecast device discovery...");
-            
-            // In a real implementation, we would use platform-specific UDP multicast
-            // to send mDNS queries and receive responses
-            
-            // For mobile platforms, Unity's network APIs have limitations
-            // We would need to use platform-specific plugins or native code
-            
-            // This is a placeholder for the actual implementation
             var discoveredDevices = new List<ChromecastReceiver>();
             
-            try
+            // First, add all known devices
+            discoveredDevices.AddRange(_knownDevices);
+            
+            if (_config.CustomIpAddresses?.Count > 0)
             {
-                // Perform a simple UDP discovery broadcast
-                discoveredDevices = await PerformUdpDiscoveryAsync(cancellationToken);
-            }
-            catch (Exception ex)
-            {
-                Debug.LogError($"Error discovering Chromecast devices: {ex.Message}");
+                Debug.Log($"Scanning {_config.CustomIpAddresses.Count} custom IP addresses...");
+                
+                try
+                {
+                    var tasks = new List<UniTask>();
+                    foreach (var ip in _config.CustomIpAddresses)
+                    {
+                        tasks.Add(ScanIpAddressAsync(ip, discoveredDevices, cancellationToken));
+                    }
+                    
+                    // Process custom IPs in batches to avoid too many concurrent connections
+                    foreach (var batch in tasks.Batch(_config.MaxConcurrentScans))
+                    {
+                        await UniTask.WhenAll(batch);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogError($"Error scanning custom IPs: {ex.Message}");
+                }
             }
             
-            Debug.Log($"Found {discoveredDevices.Count} Chromecast devices");
+            if (_config.ScanLocalSubnet)
+            {
+                Debug.Log("Scanning local subnet...");
+                try
+                {
+                    // Get the local subnet for scanning
+                    var localIps = GetLocalNetworkAddresses();
+                    if (localIps.Count > 0)
+                    {
+                        foreach (var subnet in localIps)
+                        {
+                            Debug.Log($"Scanning subnet: {subnet.Item1}/24");
+                            
+                            // Create scan tasks for each IP in the subnet
+                            var tasks = new List<UniTask>();
+                            for (int i = 1; i <= 254; i++)
+                            {
+                                string ip = $"{subnet.Item1}.{i}";
+                                
+                                // Skip if this is our own IP
+                                if (ip == subnet.Item2)
+                                    continue;
+                                    
+                                tasks.Add(ScanIpAddressAsync(ip, discoveredDevices, cancellationToken));
+                            }
+                            
+                            // Process in batches
+                            foreach (var batch in tasks.Batch(_config.MaxConcurrentScans))
+                            {
+                                await UniTask.WhenAll(batch);
+                                
+                                // Check if canceled
+                                if (cancellationToken.IsCancellationRequested)
+                                    break;
+                            }
+                        }
+                    }
+                    else
+                    {
+                        Debug.LogWarning("No local network interfaces found. Falling back to common IP ranges.");
+                        
+                        // Fallback to scanning common ranges
+                        var tasks = new List<UniTask>
+                        {
+                            ScanIpAddressAsync("192.168.1.100", discoveredDevices, cancellationToken),
+                            ScanIpAddressAsync("192.168.1.101", discoveredDevices, cancellationToken),
+                            ScanIpAddressAsync("192.168.0.100", discoveredDevices, cancellationToken),
+                            ScanIpAddressAsync("192.168.0.101", discoveredDevices, cancellationToken)
+                        };
+                        
+                        await UniTask.WhenAll(tasks);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogError($"Error scanning local subnet: {ex.Message}");
+                }
+            }
+            
+            Debug.Log($"Found {discoveredDevices.Count} total Chromecast devices");
+            
+            // Save any new devices to the known devices list
+            foreach (var device in discoveredDevices)
+            {
+                if (!_knownDevices.Any(d => d.DeviceUri.Host == device.DeviceUri.Host))
+                {
+                    _knownDevices.Add(device);
+                }
+            }
+            
             return discoveredDevices;
         }
         
-        private async UniTask<List<ChromecastReceiver>> PerformUdpDiscoveryAsync(CancellationToken cancellationToken)
+        private async UniTask ScanIpAddressAsync(string ipAddress, List<ChromecastReceiver> devices, CancellationToken cancellationToken)
         {
-            var receivers = new List<ChromecastReceiver>();
-            
-            // This is a simplified placeholder - a real implementation would:
-            // 1. Send an mDNS query packet
-            // 2. Listen for responses
-            // 3. Parse responses into ChromecastReceiver objects
-            
-            // Simulate a delay for discovery
-            await UniTask.Delay(1000, cancellationToken: cancellationToken);
-            
-            // Instead of complex mDNS, a simpler discovery approach:
-            // 1. Try common Chromecast IP address ranges
-            // 2. Attempt to connect to the Chromecast port (8009)
-            
-            // Scan common addresses for Chromecast devices
-            // This is a simplified version - in production, would scan local subnet
-            await UniTask.WhenAll(
-                TryAddDeviceIfResponding(receivers, "192.168.1.100", "Unknown Device 1"),
-                TryAddDeviceIfResponding(receivers, "192.168.1.101", "Unknown Device 2"),
-                TryAddDeviceIfResponding(receivers, "192.168.1.102", "Unknown Device 3")
-            );
-            
-            return receivers;
-        }
-        
-        private async UniTask TryAddDeviceIfResponding(List<ChromecastReceiver> devices, 
-            string ipAddress, string defaultName, int port = 8009, int timeoutMs = 300)
-        {
+            if (cancellationToken.IsCancellationRequested)
+                return;
+                
             try
             {
                 // Create TCP client with short timeout
@@ -129,26 +243,35 @@ namespace Inventonater.Chromecast.Unity
                 {
                     // Use a short timeout to quickly skip non-responsive IPs
                     var connectTask = UniTask.RunOnThreadPool(() => 
-                        client.ConnectAsync(ipAddress, port));
+                        client.ConnectAsync(ipAddress, _config.ChromecastPort));
                     
                     // Wait for connection with timeout
-                    var timeoutTask = UniTask.Delay(timeoutMs);
+                    var timeoutTask = UniTask.Delay(_config.ConnectionTimeoutMs);
                     
                     // If we can connect to the port, it might be a Chromecast
                     if (await UniTask.WhenAny(connectTask, timeoutTask) == 0)
                     {
-                        Uri deviceUri = new Uri($"https://{ipAddress}:{port}");
+                        Uri deviceUri = new Uri($"https://{ipAddress}:{_config.ChromecastPort}");
                         
-                        // Actually query device info if possible (placeholder for now)
-                        string name = await GetDeviceNameAsync(client, defaultName);
+                        // Get device name (would query device info API in a real implementation)
+                        string name = await GetDeviceNameAsync(client, $"Chromecast ({ipAddress})");
                         
-                        devices.Add(new ChromecastReceiver {
+                        var newDevice = new ChromecastReceiver {
                             Name = name,
                             DeviceUri = deviceUri,
-                            Port = port
-                        });
+                            Port = _config.ChromecastPort
+                        };
                         
-                        Debug.Log($"Found Chromecast device: {name} at {ipAddress}:{port}");
+                        // Add to devices list if not already present
+                        bool alreadyExists = devices.Any(d => d.DeviceUri.Host == ipAddress);
+                        if (!alreadyExists)
+                        {
+                            lock (devices)
+                            {
+                                devices.Add(newDevice);
+                            }
+                            Debug.Log($"Found Chromecast device: {name} at {ipAddress}:{_config.ChromecastPort}");
+                        }
                     }
                 }
             }
@@ -158,11 +281,73 @@ namespace Inventonater.Chromecast.Unity
             }
         }
         
+        private List<Tuple<string, string>> GetLocalNetworkAddresses()
+        {
+            var result = new List<Tuple<string, string>>();
+            
+            try
+            {
+                // Get all network interfaces
+                var interfaces = NetworkInterface.GetAllNetworkInterfaces()
+                    .Where(i => i.OperationalStatus == OperationalStatus.Up && 
+                           (i.NetworkInterfaceType == NetworkInterfaceType.Wireless80211 || 
+                            i.NetworkInterfaceType == NetworkInterfaceType.Ethernet))
+                    .ToList();
+                
+                foreach (var adapter in interfaces)
+                {
+                    var props = adapter.GetIPProperties();
+                    
+                    // Get IPv4 addresses
+                    foreach (var addr in props.UnicastAddresses)
+                    {
+                        if (addr.Address.AddressFamily == AddressFamily.InterNetwork)
+                        {
+                            string ipAddress = addr.Address.ToString();
+                            // Get subnet part (first 3 octets)
+                            string[] octets = ipAddress.Split('.');
+                            if (octets.Length == 4)
+                            {
+                                string subnet = $"{octets[0]}.{octets[1]}.{octets[2]}";
+                                result.Add(new Tuple<string, string>(subnet, ipAddress));
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError($"Error getting network interfaces: {ex.Message}");
+            }
+            
+            return result;
+        }
+        
+        // Helper extension method to batch tasks
+        private static IEnumerable<IEnumerable<T>> Batch<T>(this IEnumerable<T> source, int batchSize)
+        {
+            var batch = new List<T>(batchSize);
+            foreach (var item in source)
+            {
+                batch.Add(item);
+                if (batch.Count == batchSize)
+                {
+                    yield return batch;
+                    batch = new List<T>(batchSize);
+                }
+            }
+            
+            if (batch.Count > 0)
+            {
+                yield return batch;
+            }
+        }
+        
         private async UniTask<string> GetDeviceNameAsync(TcpClient client, string defaultName)
         {
             // In a real implementation, you would query the device for its friendly name
             // This is a placeholder - would actually query the device info API
-            
+
             await UniTask.CompletedTask; // Just to make it async
             return defaultName;
         }
