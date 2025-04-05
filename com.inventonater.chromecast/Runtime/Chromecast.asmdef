@@ -2,7 +2,8 @@
   "name": "Chromecast",
   "rootNamespace": "Inventonater.Chromecast",
   "references": [
-    "UniTask"
+    "UniTask",
+    "Google.Protobuf"
   ],
   "includePlatforms": [],
   "excludePlatforms": [],

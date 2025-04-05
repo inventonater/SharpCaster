@@ -104,16 +104,41 @@ namespace Inventonater.Chromecast.Unity
         
         private Dictionary<string, Type> RegisterMessageTypes()
         {
-            // In a real implementation, we would scan the assembly for message types
-            // with the ReceptionMessageAttribute, similar to what the original does
-            
-            // For now, this is a simplified placeholder
             var types = new Dictionary<string, Type>();
             
-            // TODO: Register all message types here
-            // Example: types.Add("RECEIVER_STATUS", typeof(ReceiverStatusMessage));
+            // Since we aren't doing assembly scanning for simplicity, manually register
+            // the message types we're using in the Unity implementation
             
+            // Receiver channel messages
+            types.Add("RECEIVER_STATUS", typeof(Messages.Receiver.ReceiverStatusMessage));
+            
+            // Connection channel messages
+            types.Add("CLOSE", typeof(Messages.Connection.CloseMessage));
+            
+            // Heartbeat channel messages
+            types.Add("PING", typeof(Messages.Heartbeat.PingMessage));
+            types.Add("PONG", typeof(Messages.Heartbeat.PongMessage));
+            
+            // Media channel messages (if implemented)
+            // types.Add("MEDIA_STATUS", typeof(Messages.Media.MediaStatusMessage));
+            
+            Debug.Log($"Registered {types.Count} message types");
             return types;
+        }
+        
+        /// <summary>
+        /// Register a message type manually
+        /// </summary>
+        public void RegisterMessageType(string type, Type messageType)
+        {
+            if (_messageTypes.ContainsKey(type))
+            {
+                _messageTypes[type] = messageType;
+            }
+            else
+            {
+                _messageTypes.Add(type, messageType);
+            }
         }
 
         /// <summary>
@@ -177,21 +202,134 @@ namespace Inventonater.Chromecast.Unity
             {
                 while (!_receiveCts.IsCancellationRequested)
                 {
-                    // TODO: Implement the receive loop
-                    // This would read messages from the stream, deserialize them,
-                    // and dispatch them to the appropriate channel
-                    
-                    // For now, just a placeholder
-                    await UniTask.Delay(100, cancellationToken: _receiveCts.Token);
+                    try
+                    {
+                        var message = await ReadMessageAsync();
+                        if (message == null)
+                        {
+                            // If we get a null message, the connection is likely closed
+                            Debug.LogWarning("Received null message, connection may be closed");
+                            break;
+                        }
+
+                        // Find the appropriate channel for this message's namespace
+                        var channel = _channels.FirstOrDefault(x => x.Namespace == message.Namespace);
+                        
+                        if (channel != null)
+                        {
+                            try
+                            {
+                                // If the payload is JSON, try to deserialize it into the appropriate message type
+                                if (message.PayloadType == Extensions.Api.CastChannel.CastMessage.Types.PayloadType.String)
+                                {
+                                    // Get the JSON payload
+                                    string json = message.PayloadUtf8;
+                                    
+                                    // Try to get the message type
+                                    string messageType = message.GetJsonType();
+                                    
+                                    // Find the appropriate message type class for this message type
+                                    if (_messageTypes.TryGetValue(messageType, out Type messageClass))
+                                    {
+                                        // Deserialize the JSON into the message class
+                                        var parsedMessage = JsonConvert.DeserializeObject(json, messageClass) as IMessage;
+                                        
+                                        // If the message has an ID and we're waiting for it
+                                        if (parsedMessage is IMessageWithId messageWithId)
+                                        {
+                                            // Try to find a waiting task for this message ID
+                                            if (_waitingTasks.TryRemove(messageWithId.RequestId, out var taskObj))
+                                            {
+                                                // If we have a task waiting for this message, complete it
+                                                var tc = taskObj as dynamic;
+                                                tc.TrySetResult(parsedMessage);
+                                                continue;
+                                            }
+                                        }
+                                        
+                                        // Otherwise, dispatch to the channel
+                                        await channel.OnMessageReceivedAsync(parsedMessage);
+                                    }
+                                    else
+                                    {
+                                        // Unknown message type, but still let the channel handle it as raw JSON
+                                        Debug.LogWarning($"Unknown message type: {messageType} - payload: {json}");
+                                        await channel.OnMessageReceivedAsync(new Message { PayloadJson = json });
+                                    }
+                                }
+                            }
+                            catch (Exception channelEx)
+                            {
+                                Debug.LogError($"Error processing message in channel: {channelEx}");
+                            }
+                        }
+                        else
+                        {
+                            Debug.LogWarning($"No channel found for namespace: {message.Namespace}");
+                        }
+                    }
+                    catch (Exception readEx)
+                    {
+                        if (_receiveCts.IsCancellationRequested)
+                            break;
+                            
+                        Debug.LogError($"Error reading message: {readEx}");
+                        await UniTask.Delay(100, cancellationToken: _receiveCts.Token);
+                    }
                 }
             }
             catch (OperationCanceledException)
             {
                 // Expected when cancellation is requested
+                Debug.Log("Receive loop cancelled");
             }
             catch (Exception ex)
             {
                 Debug.LogError($"Error in receive loop: {ex.Message}");
+            }
+        }
+        
+        private async UniTask<Extensions.Api.CastChannel.CastMessage> ReadMessageAsync()
+        {
+            // Chromecast messages are prefixed with a 4-byte big-endian length
+            var headerBuffer = new byte[4];
+            
+            try
+            {
+                // Read the message length header
+                int bytesRead = await UniTask.RunOnThreadPool(() =>
+                    _stream.ReadAsync(headerBuffer, 0, 4));
+                    
+                if (bytesRead < 4)
+                {
+                    Debug.LogWarning($"Failed to read message header: got {bytesRead} bytes");
+                    return null;
+                }
+                
+                // Convert the big-endian header to a message length
+                int messageLength = (headerBuffer[0] << 24) | (headerBuffer[1] << 16) | 
+                                    (headerBuffer[2] << 8) | headerBuffer[3];
+                                    
+                var messageBuffer = new byte[messageLength];
+                
+                // Read the full message
+                bytesRead = await UniTask.RunOnThreadPool(() => 
+                    _stream.ReadAsync(messageBuffer, 0, messageLength));
+                
+                if (bytesRead < messageLength)
+                {
+                    Debug.LogWarning($"Failed to read full message: got {bytesRead} of {messageLength} bytes");
+                    return null;
+                }
+                
+                // Parse the protocol buffer message
+                var message = Extensions.Api.CastChannel.CastMessage.Parser.ParseFrom(messageBuffer);
+                return message;
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError($"Error reading message: {ex.Message}");
+                throw;
             }
         }
 
@@ -200,11 +338,43 @@ namespace Inventonater.Chromecast.Unity
         /// </summary>
         public async UniTask SendAsync(ILogger channelLogger, string ns, IMessage message, string destinationId)
         {
-            // TODO: Implement the send method
-            // This would serialize the message and send it over the stream
+            await _sendSemaphoreSlim.WaitAsync();
             
-            Debug.Log($"Sending message to {destinationId}: {message.Type}");
-            await UniTask.CompletedTask;
+            try
+            {
+                channelLogger?.LogDebug($"Sending message to {destinationId}: {message.Type}");
+                Debug.Log($"Sending message to {destinationId}: {message.Type}");
+                
+                var castMessage = new Extensions.Api.CastChannel.CastMessage
+                {
+                    ProtocolVersion = Extensions.Api.CastChannel.CastMessage.Types.ProtocolVersion.Castv21,
+                    SourceId = SenderId.ToString(),
+                    DestinationId = destinationId,
+                    Namespace = ns,
+                    PayloadType = Extensions.Api.CastChannel.CastMessage.Types.PayloadType.String
+                };
+                
+                // Serialize the message to JSON
+                string json = JsonConvert.SerializeObject(message);
+                castMessage.PayloadUtf8 = json;
+                
+                // Convert to bytes
+                var data = castMessage.ToProto();
+                
+                // Send the message over the stream
+                await UniTask.RunOnThreadPool(() => _stream.WriteAsync(data, 0, data.Length));
+                await UniTask.RunOnThreadPool(() => _stream.FlushAsync());
+            }
+            catch (Exception ex)
+            {
+                channelLogger?.LogError($"Error sending message: {ex.Message}");
+                Debug.LogError($"Error sending message: {ex.Message}");
+                throw;
+            }
+            finally
+            {
+                _sendSemaphoreSlim.Release();
+            }
         }
 
         /// <summary>
@@ -212,14 +382,31 @@ namespace Inventonater.Chromecast.Unity
         /// </summary>
         public async UniTask<TResponse> SendAsync<TResponse>(ILogger channelLogger, string ns, IMessageWithId message, string destinationId) where TResponse : IMessageWithId
         {
-            // TODO: Implement the send method with response
-            // This would send the message and set up a TaskCompletionSource to wait for the response
+            // Create a completion source for the response
+            var tcs = new UniTaskCompletionSource<TResponse>();
             
-            Debug.Log($"Sending message with ID {message.RequestId} to {destinationId}: {message.Type}");
-            
-            // For now, return a dummy response
-            await UniTask.Delay(100);
-            return default;
+            try
+            {
+                // Store the completion source for this request ID
+                _waitingTasks[message.RequestId] = tcs;
+                
+                // Send the message
+                await SendAsync(channelLogger, ns, message, destinationId);
+                
+                // Wait for the response with a timeout
+                return await tcs.Task.Timeout(TimeSpan.FromMilliseconds(RECEIVE_TIMEOUT));
+            }
+            catch (TimeoutException)
+            {
+                channelLogger?.LogError($"Timeout waiting for response to message {message.Type} with ID {message.RequestId}");
+                Debug.LogError($"Timeout waiting for response to message {message.Type} with ID {message.RequestId}");
+                throw;
+            }
+            finally
+            {
+                // Clean up the waiting task
+                _waitingTasks.TryRemove(message.RequestId, out _);
+            }
         }
 
         /// <summary>

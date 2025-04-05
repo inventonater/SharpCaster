@@ -4,136 +4,167 @@ using Inventonater.Chromecast.Models;
 using System;
 using System.Collections.Generic;
 using System.Net;
+using System.Net.NetworkInformation;
 using System.Net.Sockets;
-using System.Text;
 using System.Threading;
 using UnityEngine;
 
 namespace Inventonater.Chromecast.Unity
 {
     /// <summary>
-    /// Unity-specific implementation of Chromecast device discovery
+    /// Unity implementation of Chromecast device discovery
     /// </summary>
     public class UnityChromecastLocator : IChromecastLocator
     {
-        /// <summary>
-        /// Event raised when a Chromecast device is found
-        /// </summary>
-        public event EventHandler<ChromecastReceiver> ChromecastReceivedFound;
+        // Constants for mDNS/DNS-SD discovery
+        private const int MDNS_PORT = 5353;
+        private const string MDNS_ADDRESS = "224.0.0.251";
+        private const string SERVICE_TYPE = "_googlecast._tcp";
+        private const string LOCAL_DOMAIN = "local";
         
-        private const int DEFAULT_PORT = 8009;
-        private List<ChromecastReceiver> _discoveredDevices = new List<ChromecastReceiver>();
-        
-        /// <summary>
-        /// Find Chromecast devices on the network
-        /// </summary>
-        /// <returns>A collection of discovered Chromecast devices</returns>
-        public async UniTask<IEnumerable<ChromecastReceiver>> FindReceiversAsync()
-        {
-            CancellationTokenSource cancellationTokenSource = new CancellationTokenSource();
-            cancellationTokenSource.CancelAfter(TimeSpan.FromMilliseconds(2000));
-            return await FindReceiversAsync(cancellationTokenSource.Token);
-        }
+        private readonly List<ChromecastReceiver> _simulatedDevices = new List<ChromecastReceiver>();
         
         /// <summary>
-        /// Find Chromecast devices on the network
+        /// Initializes a new instance of the UnityChromecastLocator class
         /// </summary>
-        /// <param name="cancellationToken">Token to cancel the operation</param>
-        /// <returns>A collection of discovered Chromecast devices</returns>
-        public async UniTask<IEnumerable<ChromecastReceiver>> FindReceiversAsync(CancellationToken cancellationToken)
+        public UnityChromecastLocator()
         {
-            Debug.Log("Searching for Chromecast devices...");
-            _discoveredDevices.Clear();
-            
-            // In a real implementation, we would use proper mDNS discovery
-            // For now, simulate discovery with some example devices
-            #if UNITY_EDITOR
-            // In Editor mode, create some simulated devices for testing
-            await SimulateDiscoveryAsync(cancellationToken);
-            #else
-            // On device, try to do UDP broadcast discovery
-            await PerformUdpDiscoveryAsync(cancellationToken);
-            #endif
-            
-            Debug.Log($"Found {_discoveredDevices.Count} Chromecast devices");
-            return _discoveredDevices;
-        }
-        
-        private async UniTask SimulateDiscoveryAsync(CancellationToken cancellationToken)
-        {
-            // Simulate network latency
-            await UniTask.Delay(500, cancellationToken: cancellationToken);
-            
-            // Add a simulated Chromecast device
-            var chromecast = new ChromecastReceiver
+            // Add simulated devices for testing in editor
+            if (Application.isEditor)
             {
-                DeviceUri = new Uri("https://192.168.1.100"),
-                Name = "Living Room TV",
-                Model = "Chromecast Ultra",
-                Version = "1.36",
-                Status = "ONLINE",
-                Port = DEFAULT_PORT,
-                ExtraInformation = new Dictionary<string, string>
-                {
-                    { "fn", "Living Room TV" },
-                    { "md", "Chromecast Ultra" },
-                    { "ve", "1.36" },
-                    { "rs", "ONLINE" }
-                }
-            };
-            
-            _discoveredDevices.Add(chromecast);
-            ChromecastReceivedFound?.Invoke(this, chromecast);
-            
-            // Simulate another device being found after a delay
-            if (!cancellationToken.IsCancellationRequested)
-            {
-                await UniTask.Delay(300, cancellationToken: cancellationToken);
-                
-                var chromecast2 = new ChromecastReceiver
-                {
-                    DeviceUri = new Uri("https://192.168.1.101"),
-                    Name = "Bedroom TV",
-                    Model = "Chromecast",
-                    Version = "1.36",
-                    Status = "ONLINE",
-                    Port = DEFAULT_PORT,
-                    ExtraInformation = new Dictionary<string, string>
-                    {
-                        { "fn", "Bedroom TV" },
-                        { "md", "Chromecast" },
-                        { "ve", "1.36" },
-                        { "rs", "ONLINE" }
-                    }
-                };
-                
-                _discoveredDevices.Add(chromecast2);
-                ChromecastReceivedFound?.Invoke(this, chromecast2);
+                AddSimulatedDevice("Living Room TV", "192.168.1.100");
+                AddSimulatedDevice("Bedroom TV", "192.168.1.101");
             }
         }
         
-        private async UniTask PerformUdpDiscoveryAsync(CancellationToken cancellationToken)
+        /// <summary>
+        /// Adds a simulated device for testing
+        /// </summary>
+        /// <param name="name">The device name</param>
+        /// <param name="ipAddress">The IP address</param>
+        public void AddSimulatedDevice(string name, string ipAddress)
         {
+            var uri = new Uri($"https://{ipAddress}:8009");
+            _simulatedDevices.Add(new ChromecastReceiver
+            {
+                Name = name,
+                DeviceUri = uri,
+                Port = 8009
+            });
+        }
+        
+        /// <summary>
+        /// Finds Chromecast devices on the network
+        /// </summary>
+        /// <param name="cancellationToken">The cancellation token</param>
+        /// <returns>The discovered Chromecast devices</returns>
+        public async UniTask<IEnumerable<ChromecastReceiver>> FindReceiversAsync(CancellationToken cancellationToken = default)
+        {
+            // In the editor, return simulated devices for testing
+            if (Application.isEditor)
+            {
+                Debug.Log("Using simulated Chromecast devices in editor");
+                return _simulatedDevices;
+            }
+            
+            Debug.Log("Starting Chromecast device discovery...");
+            
+            // In a real implementation, we would use platform-specific UDP multicast
+            // to send mDNS queries and receive responses
+            
+            // For mobile platforms, Unity's network APIs have limitations
+            // We would need to use platform-specific plugins or native code
+            
+            // This is a placeholder for the actual implementation
+            var discoveredDevices = new List<ChromecastReceiver>();
+            
             try
             {
-                // This is a placeholder for real device discovery
-                // In a real implementation, we would:
-                // 1. Send a UDP broadcast to discover Chromecast devices
-                // 2. Process responses and create ChromecastReceiver objects
-                
-                // For now, just wait a bit to simulate searching
-                await UniTask.Delay(1000, cancellationToken: cancellationToken);
-                
-                // TODO: Replace with actual UDP broadcast discovery code
-                // UdpClient client = new UdpClient();
-                // client.EnableBroadcast = true;
-                // client.Send(discoveryMessage, discoveryMessage.Length, new IPEndPoint(IPAddress.Broadcast, MDNS_PORT));
-                // ... process responses
+                // Perform a simple UDP discovery broadcast
+                discoveredDevices = await PerformUdpDiscoveryAsync(cancellationToken);
             }
             catch (Exception ex)
             {
-                Debug.LogError($"Error during Chromecast discovery: {ex.Message}");
+                Debug.LogError($"Error discovering Chromecast devices: {ex.Message}");
             }
+            
+            Debug.Log($"Found {discoveredDevices.Count} Chromecast devices");
+            return discoveredDevices;
+        }
+        
+        private async UniTask<List<ChromecastReceiver>> PerformUdpDiscoveryAsync(CancellationToken cancellationToken)
+        {
+            var receivers = new List<ChromecastReceiver>();
+            
+            // This is a simplified placeholder - a real implementation would:
+            // 1. Send an mDNS query packet
+            // 2. Listen for responses
+            // 3. Parse responses into ChromecastReceiver objects
+            
+            // Simulate a delay for discovery
+            await UniTask.Delay(1000, cancellationToken: cancellationToken);
+            
+            // Instead of complex mDNS, a simpler discovery approach:
+            // 1. Try common Chromecast IP address ranges
+            // 2. Attempt to connect to the Chromecast port (8009)
+            
+            // Scan common addresses for Chromecast devices
+            // This is a simplified version - in production, would scan local subnet
+            await UniTask.WhenAll(
+                TryAddDeviceIfResponding(receivers, "192.168.1.100", "Unknown Device 1"),
+                TryAddDeviceIfResponding(receivers, "192.168.1.101", "Unknown Device 2"),
+                TryAddDeviceIfResponding(receivers, "192.168.1.102", "Unknown Device 3")
+            );
+            
+            return receivers;
+        }
+        
+        private async UniTask TryAddDeviceIfResponding(List<ChromecastReceiver> devices, 
+            string ipAddress, string defaultName, int port = 8009, int timeoutMs = 300)
+        {
+            try
+            {
+                // Create TCP client with short timeout
+                using (var client = new TcpClient())
+                {
+                    // Use a short timeout to quickly skip non-responsive IPs
+                    var connectTask = UniTask.RunOnThreadPool(() => 
+                        client.ConnectAsync(ipAddress, port));
+                    
+                    // Wait for connection with timeout
+                    var timeoutTask = UniTask.Delay(timeoutMs);
+                    
+                    // If we can connect to the port, it might be a Chromecast
+                    if (await UniTask.WhenAny(connectTask, timeoutTask) == 0)
+                    {
+                        Uri deviceUri = new Uri($"https://{ipAddress}:{port}");
+                        
+                        // Actually query device info if possible (placeholder for now)
+                        string name = await GetDeviceNameAsync(client, defaultName);
+                        
+                        devices.Add(new ChromecastReceiver {
+                            Name = name,
+                            DeviceUri = deviceUri,
+                            Port = port
+                        });
+                        
+                        Debug.Log($"Found Chromecast device: {name} at {ipAddress}:{port}");
+                    }
+                }
+            }
+            catch
+            {
+                // Just swallow exceptions - this is an opportunistic scan
+            }
+        }
+        
+        private async UniTask<string> GetDeviceNameAsync(TcpClient client, string defaultName)
+        {
+            // In a real implementation, you would query the device for its friendly name
+            // This is a placeholder - would actually query the device info API
+            
+            await UniTask.CompletedTask; // Just to make it async
+            return defaultName;
         }
     }
 }

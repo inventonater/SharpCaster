@@ -5,13 +5,16 @@
   "description": "Chromecast implementation for Unity based on SharpCaster",
   "unity": "2022.3",
   "unityRelease": "0f1",
-  "dependencies": {},
+  "dependencies": {
+    "com.stalomeow.google-protobuf": "3.21.12"
+  },
   "scopedRegistries": [
     {
       "name": "package.openupm.com",
       "url": "https://package.openupm.com",
       "scopes": [
-        "com.cysharp.unitask"
+        "com.cysharp.unitask",
+        "com.stalomeow.google-protobuf"
       ]
     }
   ],
